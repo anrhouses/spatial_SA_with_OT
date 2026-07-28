@@ -1,18 +1,16 @@
 ###############################################################################
 # Uncertainty matrix definition, Cross-validation and performance filtering
 
-#1. Estimate empirical spatial range from variogram.
-#2. Generate mesh ensemble.
-#3. Generate uncertainty design: model formula, mesh choice, smoothness parameter, PC priors
-#4. Fit SPDE-INLA model.
-#5. Perform Leave-Group-Out CV
-#6. Compute statistical measures for filtering out bad performing scenarios
-#7. Retain top-performing scenarios.
+#1. Load uncertainty design: model formula, mesh choice, smoothness parameter, PC priors
+#2. Fit SPDE-INLA model.
+#3. Perform Leave-Group-Out CV
+#4. Compute statistical measures for filtering out bad performing scenarios
+#5. Retain top-performing scenarios.
 
 # Author: Corinna Perchtold
 ###############################################################################
-
-
+library(progressr)
+library(PopED)
 library(ggplot2)
 library(sf)
 library(raster)
@@ -21,7 +19,8 @@ library(terra)
 library(fmesher)
 library(Matrix)
 library(gstat)
-
+library(future)
+library(future.apply)
 library(INLA)
 library(dplyr)
 
@@ -34,114 +33,10 @@ load("01_spatial_points.R")
 set.seed(1234)
 load("01_uncertainty_matrix.R")
 
-#to recreate the mesh
-estimate_spatial_range <- function(coords, response) {
-  
-  # Create data frame from inputs
-  sp_df <- data.frame(
-    x = coords[,1], 
-    y = coords[,2], 
-    z = response  
-  )
-  coordinates(sp_df) <- ~x+y
-  
-  vgm_emp <- variogram(response ~ 1, data = sp_df)
-  
-  # Fit both Exponential (nu = 0.5) and Matérn (nu = 1) to get direct estimates
-  fit_exp <- fit.variogram(vgm_emp, model = vgm("Exp"))
-  init_mat <- vgm(psill = var(sp_df$z)*0.9, model = "Mat", range = 10000, kappa = 1, nugget = 0.004)
-  fit_mat  <- fit.variogram(vgm_emp, model = init_mat, fit.kappa = FALSE)  
-  
-  
-  
-  # Extract explicit gstat scale parameters (a)
-  scale_exp <- fit_exp$range[2]
-  scale_mat <- fit_mat$range[2]
-  
-  # 3. FIX: Convert gstat scale -> INLA implied effective range (rho = sqrt(8*nu) * a)
-  rho_exp_est <- scale_exp * sqrt(8 * 0.5)  
-  rho_mat_est <- scale_mat * sqrt(8 * 1)    
-  
-  # Extract sill metrics
-  nugget_exp  <- fit_exp$psill[1]
-  nugget_mat <-fit_mat$psill[1]
-  psill_exp   <- fit_exp$psill[2]
-  psill_mat   <- fit_mat$psill[2]
-  
-  # Translate total sill back to INLA marginal variance scale (sigma = sqrt(psill))
-  sigma_exp_est <- sqrt(psill_exp)
-  sigma_mat_est <- sqrt(psill_mat)
-  
-  cat("\n--- DETECTED EMPIRICAL ESTIMATES (INLA METRICS) ---\n")
-  cat(sprintf("Exponential (nu=0.5) -> Implied INLA rho: %.1f m | sigma: %.3f\n", rho_exp_est, sigma_exp_est))
-  cat(sprintf("Matérn      (nu=1.0) -> Implied INLA rho: %.1f m | sigma: %.3f\n", rho_mat_est, sigma_mat_est))
-  
-  # Export values into global environment so Stage 2 can use them dynamically
-  return(list(
-    vgm_emp   = vgm_emp,
-    nugget_exp    = nugget_exp,
-    nugget_mat =nugget_mat,
-    psill_exp=psill_exp,
-    psill_mat=psill_mat,
-    rho_exp   = rho_exp_est,
-    rho_mat   = rho_mat_est,
-    sigma_exp = sigma_exp_est,
-    sigma_mat = sigma_mat_est
-  ))
-}
 
 
-#to build the mesh ensemble yourself
-build_mesh_ensemble <- function(coords, boundary, response,
-                                n_levels = 6) {
-  
-  est       <- estimate_spatial_range(coords, response)
-  emp_range <- mean(c(est$rho_exp, est$rho_mat))
-  
-  inner_edge_vals <- seq(emp_range / 3, emp_range, length.out = n_levels)
-  
-  cat(sprintf("Effective range: %.0f m\n", emp_range))
-  cat("Inner edge levels:", round(inner_edge_vals), "m\n")
-  
-  
-  
-  # 2. Build the mesh using the boundary object dynamically
-  mesh_list <- lapply(inner_edge_vals, function(inner) {
-    fm_mesh_2d(
-      loc.domain = coords,
-      boundary   = boundary,                 
-      max.edge   = c(inner/2, inner*1.5),      # fine inside, coarse buffer
-      cutoff     = inner / 5,#3.5,   #here i need to adjust
-      offset     = c(inner * 1, emp_range * 2)
-    )
-  })
-  
-  
-  
-  cat("Built", length(mesh_list), "meshes | nodes:",
-      sapply(mesh_list, function(m) m$n), "\n")
-  
-  list(mesh_list = mesh_list, inner_edge_vals = inner_edge_vals,
-       emp_range = emp_range)
-}
-
-
-mesh_out  <- build_mesh_ensemble(coords.stations2, boundary2,
-                                 log10(obs.data2$resultat),
-                                 n_levels = 6)
-
-mesh_list <- mesh_out$mesh_list
-
-# 3. Create the experimental design
-UNCERTAINTY <- rbind(  expand.grid(
-  form_idx = 1:length(formula_list),
-  mesh_idx = 1:length(mesh_list),
-  alpha_value=c(1.5,2),   #exponential or Matern cov function
-  prior_range = runif(10, min = 10000 , max = 20000 ),  # take 10 samples now
-  prior_sigma = runif(10, min = 0.25,  max = 0.45)))
-
-
-cat("We have",nrow(UNCERTAINTY), "scenarios")
+n_scenarios<-nrow(UNCERTAINTY)
+cat("We have",n_scenarios, "scenarios")
 
 #########################  Parallelisation setup ####################  
 # Detect cores. Each INLA run uses PARDISO internally, so we avoid
@@ -164,7 +59,7 @@ options(future.globals.maxSize = 8 * 1024^3)   # 8 GB ceiling per worker
 plan(multisession, workers = n_workers)
 
 # Create results directory
-results_dir <- "cv_results_checkpoints"
+results_dir <- "cv_results_checkpoints_test"
 dir.create(results_dir, showWarnings = FALSE)
 
 cat(sprintf("Starting LGOCV for %d scenarios | 1 INLA fit + inla.group.cv() each\n\n",
@@ -460,7 +355,7 @@ cat("All done.\n")
 library(ggplot2)
 library(dplyr)
 
-results_dir <- "~/scratch/cv_results_checkpoints"
+results_dir <- "~/cv_results_checkpoints"
 n_scenarios <- nrow(UNCERTAINTY)
 
 cv_all_stats <- vector("list", n_scenarios)
