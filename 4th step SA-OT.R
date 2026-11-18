@@ -149,7 +149,7 @@ message("\nStage 1 done. Inspect Stage1_M_selection.png, set H_FINAL, ",
 #final run with selected binning
 EPS_FINAL       <- 0.01
 N_REPS_FINAL    <- 200      # 95th pct needs more than 200 to be stable
-H_FINAL         <- 20       # <-- SET THIS AFTER READING THE STAGE 1 PLOT
+H_FINAL         <- 10       # <-- SET THIS AFTER READING THE STAGE 1 PLOT
 
 sinkhorn_final  <- list(epsilon = EPS_FINAL,  numIterations = SINK_ITERS,
                         maxErr = SINK_MAXERR)
@@ -362,7 +362,7 @@ message("Signif_vs_floor = Low_CI > Threshold is the defensible relevance ",
 
 #################### reload result ############
 library(readr)
-final_results <- read_csv("Final_results_sinkhorn_more_M20_all.csv")
+final_results <- read_csv("Final_results_sinkhorn_more_M10_all.csv")
 
 final_band <- final_results %>%  group_by(Type) %>%  summarise(Threshold = mean(Threshold),    .groups = "drop" )
 
@@ -407,6 +407,6 @@ final<-ggplot(final_results, aes(Factor, Index, fill = Relevant)) +
     strip.text = element_text(size = 24, face = "bold")
   )+    theme(strip.text = element_text(face = "bold"),
               axis.text.x = element_text(angle = 45, hjust = 1))
-ggsave(sprintf("Final_indices_sinkhorn_more_M%d_%s.png", 5, "all"),
+ggsave(sprintf("Final_indices_sinkhorn_more_M%d_%s.png", 10, "all"),
        final, width = 22, height = 15, dpi = 300)
 
