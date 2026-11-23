@@ -1,26 +1,18 @@
 ###############################################################################
 # Optimal-transport sensitivity analysis (OT-SA) of the retained INLA ensemble
 #
-#   Stage 1  H-selection: Sinkhorn OT indices and irrelevance thresholds over a grid
-#            of bin numbers H (global and per PC; fast, not bootstrapped)
-#   Stage 2  final analysis at H_FINAL:
+#   1.  H-selection: Sinkhorn OT indices and irrelevance thresholds over a grid
+#            of bin numbers H (global and per PC)
+#   2.  final analysis at H_FINAL:
 #              - Sinkhorn OT indices, global and per PC, with bootstrap CIs
 #              - irrelevance thresholds from uniform dummy inputs
 #              - exact OT indices (network simplex globally, exact 1D per PC)
 #              - Wasserstein-Bures (WB) decomposition: advective + diffusive,
 #                non-Gaussian = exact OT - (advective + diffusive),
 #                regularisation bias = Sinkhorn - exact
-#   Figures  H-selection; indices with CI and threshold; Sinkhorn index | WB decomposition,
-#            where the stack reaches the Sinkhorn index: advective + diffusive + remainder,
+#   Figures  H-selection; indices with CI and threshold; Sinkhorn index | WB decomposition
 #            remainder = Sinkhorn - (advective + diffusive) = non-Gaussian + regularisation bias
 #
-# Inputs (in the working directory)
-#   01_Uncertainty_18k_preprocessed.R : data.frame `labelled` (one row per retained
-#                                       scenario and criterion, factor columns below)
-#   01_PCA_RMSE_log10_Cov95.R         : PCA object with BETA (scenarios x K scores)
-#                                       and n_pcs
-#
-# Requires gsaot 1.1.1
 # Author: Corinna Perchtold
 ###############################################################################
 
