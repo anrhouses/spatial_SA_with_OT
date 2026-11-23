@@ -11,7 +11,9 @@
 #        Sinkhorn (eps = 0.01) for the global map AND for each PC, bootstrap R = 200,
 #        uniform-dummy thresholds (95th percentile of 200 draws, H = 10)
 #   7. WB decomposition (advective, diffusive, non-Gaussian = exact - WB;
-#      exact = transport solver for the global map, 1D quantile formula per PC) and 2x2 figure
+#      exact = transport solver for the global map, 1D quantile formula per PC) and 2x2 figure;
+#      in the figure the stack reaches the Sinkhorn index: the grey remainder is
+#      Sinkhorn - (advective + diffusive) = non-Gaussian part + regularisation bias
 #
 # Every stage is saved; rerunning the script skips finished stages.
 # Same data as the INLA prediction step (log10 concentrations, same covariates, same grid).
@@ -122,6 +124,7 @@ saveRDS(list(RF_UNC = RF_UNC, cov_sets = cov_sets), f_out("01_rf_uncertainty_mat
 # =============================================================================
 # EDF reference points: corners and centre of the PREDICTION domain (projected coordinates,
 # fixed, independent of the stations -> identical in every CV fold and on the grid)
+bb <- apply(as.matrix(coords.prediction2[, 1:2]), 2, range)   # rows: min, max; columns: x, y
 ref_pts <- rbind(c(bb[1, 1], bb[1, 2]),   # (x_min, y_min)  lower-left corner
                  c(bb[1, 1], bb[2, 2]),   # (x_min, y_max)  upper-left corner
                  c(bb[2, 1], bb[1, 2]),   # (x_max, y_min)  lower-right corner
@@ -375,8 +378,13 @@ if (!file.exists(wb_file)) {
   saveRDS(dec, wb_file)
 }
 dec_rf <- ot_rf %>% left_join(readRDS(wb_file), by = c("Type", "Factor")) %>%
-  mutate(NonGaussian   = pmax(Exact - WB, 0),
-         bias_sinkhorn = original - Exact)                      # entropic bias (plain Sinkhorn estimates)
+  mutate(NonGaussian   = pmax(Exact - WB, 0),                  # exact - WB
+         bias_sinkhorn = original - Exact,                      # entropic bias (plain Sinkhorn estimates)
+         Remainder     = Index - (Advective + Diffusive))       # grey part: up to the Sinkhorn index
+if (any(dec_rf$Remainder < 0, na.rm = TRUE))
+  message(sum(dec_rf$Remainder < 0, na.rm = TRUE),
+          " factor(s) with Sinkhorn index below advective + diffusive: remainder set to 0")
+dec_rf <- dec_rf %>% mutate(Remainder = pmax(Remainder, 0))
 write.csv(dec_rf, f_out("07_rf_decomposition.csv"), row.names = FALSE)
 
 factor_labels_rf <- c(cov_set = "Covariate set", spatial = "Spatial representation",
@@ -388,13 +396,14 @@ fx    <- setNames(seq_along(factor_labels_rf), names(factor_labels_rf))
 off   <- 0.2
 bars <- bind_rows(
   dec_rf %>% transmute(Type, Factor, Component = "Index", value = Index, x = fx[Factor] - off),
-  dec_rf %>% dplyr::select(Type, Factor, Advective, Diffusive, NonGaussian) %>%
-    pivot_longer(c(Advective, Diffusive, NonGaussian), names_to = "Component", values_to = "value") %>%
+  dec_rf %>% dplyr::select(Type, Factor, Advective, Diffusive, Remainder) %>%
+    pivot_longer(c(Advective, Diffusive, Remainder), names_to = "Component", values_to = "value") %>%
     mutate(x = fx[Factor] + off)) %>%
   mutate(Type = factor(Type, levels = types),
-         Component = factor(Component, levels = c("Index", "Advective", "Diffusive", "NonGaussian"),
+         Component = factor(Component, levels = c("Index", "Advective", "Diffusive", "Remainder"),
                             labels = c("OT index (Sinkhorn)", "Advective (mean shift)",
-                                       "Diffusive (covariance change)", "Non-Gaussian")))
+                                       "Diffusive (covariance change)",
+                                       "Non-Gaussian and regularisation bias")))
 ci_df  <- dec_rf %>% transmute(Type = factor(Type, levels = types), x = fx[Factor] - off, Low_CI, High_CI)
 thr_df <- dec_rf %>% distinct(Type, Threshold) %>% mutate(Type = factor(Type, levels = types))
 
